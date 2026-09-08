@@ -3,13 +3,18 @@ from typing import Any, Literal
 import pytest
 
 from kirin import ir, types
+from kirin.passes import TypeInfer
 from kirin.prelude import structural_no_opt
 from kirin.rewrite import Walk
 from kirin.dialects import py, scf, func, debug, ilist
 from kirin.dialects.ilist.rewrite.to_loop import MapToForLoop
 
 
-def lower(method: ir.Method[..., Any]) -> None:
+def lower(method: ir.Method[..., Any]) -> tuple[types.TypeAttribute, ...]:
+    TypeInfer(method.dialects, no_raise=False)(method)
+    original_types = tuple(
+        stmt.result.type for stmt in method.code.walk() if isinstance(stmt, ilist.Map)
+    )
     result = Walk(MapToForLoop()).rewrite(method.code)
     assert result.has_done_something
     assert not result.exceeded_max_iter
@@ -18,6 +23,7 @@ def lower(method: ir.Method[..., Any]) -> None:
     repeated = Walk(MapToForLoop()).rewrite(method.code)
     assert not repeated.has_done_something
     assert not repeated.exceeded_max_iter
+    return original_types
 
 
 @pytest.mark.parametrize(
@@ -63,7 +69,7 @@ def test_map_preserves_element_and_length_types() -> None:
     assert empty.type == ilist.IListType[types.Bool, types.Literal(0)]
 
 
-def test_map_unknown_callback_return_type() -> None:
+def test_map_preserves_inferred_callback_return_type() -> None:
     @structural_no_opt
     def identity(x: int) -> Any:
         return x
@@ -74,10 +80,10 @@ def test_map_unknown_callback_return_type() -> None:
 
     xs = ilist.IList([2, 5], elem=types.Int)
     assert list(mapped(xs)) == [2, 5]
-    lower(mapped)
+    (inferred_type,) = lower(mapped)
     assert list(mapped(xs)) == [2, 5]
     loop = next(stmt for stmt in mapped.code.walk() if isinstance(stmt, scf.For))
-    assert loop.results[0].type == ilist.IListType[types.Any, types.Any]
+    assert loop.results[0].type == inferred_type
 
 
 @pytest.mark.parametrize("enabled", [False, True])
