@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal
 
 import pytest
@@ -15,6 +16,14 @@ from kirin.dialects.ilist.rewrite.to_loop import (
     ScanToForLoop,
     ForEachToForLoop,
 )
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+_DEBUG_VALUE = re.compile(r" = (-?\d+)")
+
+
+def emitted_values(output: str) -> list[int]:
+    """The integers `debug.info` printed, ignoring the printer's color escapes."""
+    return [int(value) for value in _DEBUG_VALUE.findall(_ANSI_ESCAPE.sub("", output))]
 
 
 def lower(method: ir.Method[..., Any]) -> tuple[types.TypeAttribute, ...]:
@@ -165,16 +174,12 @@ def test_map_callback_effects(
     xs = ilist.IList(values, elem=types.Int)
     assert list(mapped(xs)) == [x + 1 for x in values]
     output = capsys.readouterr().out
-    observed = [
-        int(line.rsplit(" = ", 1)[1]) for line in output.splitlines() if " = " in line
-    ]
+    observed = emitted_values(output)
     assert observed == values
     lower(mapped)
     assert list(mapped(xs)) == [x + 1 for x in values]
     output = capsys.readouterr().out
-    observed = [
-        int(line.rsplit(" = ", 1)[1]) for line in output.splitlines() if " = " in line
-    ]
+    observed = emitted_values(output)
     assert observed == values
 
 
@@ -337,11 +342,7 @@ def test_foldl_callback_effects(
             lower_fold(folded)
         assert folded(xs) == 7 + sum(values)
         output = capsys.readouterr().out
-        observed = [
-            int(line.rsplit(" = ", 1)[1])
-            for line in output.splitlines()
-            if " = " in line
-        ]
+        observed = emitted_values(output)
         assert observed == values
 
 
@@ -389,11 +390,7 @@ def test_foldr_callback_order(capsys: pytest.CaptureFixture[str]) -> None:
             lower_fold(folded)
         assert folded(xs) == 6
         output = capsys.readouterr().out
-        observed = [
-            int(line.rsplit(" = ", 1)[1])
-            for line in output.splitlines()
-            if " = " in line
-        ]
+        observed = emitted_values(output)
         assert observed == [3, 2, 1]
 
 
@@ -533,11 +530,7 @@ def test_scan_callback_effects(
         assert state == 7 + sum(values)
         assert list(outputs) == values
         output = capsys.readouterr().out
-        observed = [
-            int(line.rsplit(" = ", 1)[1])
-            for line in output.splitlines()
-            if " = " in line
-        ]
+        observed = emitted_values(output)
         assert observed == values
 
 
@@ -575,11 +568,7 @@ def test_for_each_effects_and_captures(
             assert not Walk(ForEachToForLoop()).rewrite(visit.code).has_done_something
         assert visit(xs, 5, enabled) == len(values)
         output = capsys.readouterr().out
-        observed = [
-            int(line.rsplit(" = ", 1)[1])
-            for line in output.splitlines()
-            if " = " in line
-        ]
+        observed = emitted_values(output)
         assert observed == ([x + 5 for x in values] if enabled else [])
         assert list(xs) == values
 
@@ -648,3 +637,119 @@ def test_boolean_reductions_nested(enabled: bool, count: int) -> None:
 def test_iteration_rules_non_match() -> None:
     for rule in (ForEachToForLoop(), AnyToForLoop(), AllToForLoop()):
         assert not rule.rewrite(py.Constant(1)).has_done_something
+
+
+def test_pass_rewrites_every_higher_order_statement() -> None:
+    @structural_no_opt
+    def double(x: int) -> int:
+        return 2 * x
+
+    @structural_no_opt
+    def add(acc: int, x: int) -> int:
+        return acc + x
+
+    @structural_no_opt
+    def running(acc: int, x: int) -> tuple[int, int]:
+        return acc + x, acc + x
+
+    @structural_no_opt
+    def positive(x: int) -> bool:
+        return x > 0
+
+    @structural_no_opt
+    def kernel(xs: ilist.IList[int, Any]) -> tuple[int, int, int, bool, bool]:
+        doubled = ilist.map(double, xs)
+        ilist.for_each(double, doubled)
+        signs = ilist.map(positive, doubled)
+        scanned = ilist.scan(running, doubled, 0)
+        return (
+            ilist.foldl(add, doubled, 0),
+            ilist.foldr(add, doubled, 0),
+            ilist.foldl(add, scanned[1], 0),
+            ilist.any(signs),
+            ilist.all(signs),
+        )
+
+    xs = ilist.IList([1, 2, 3], elem=types.Int)
+    expected = kernel(xs)
+    assert expected == (12, 12, 20, True, True)
+
+    pass_ = ilist.IListToLoop(kernel.dialects, no_raise=False)
+    assert pass_(kernel).has_done_something
+    assert not any(
+        isinstance(
+            stmt,
+            (
+                ilist.Map,
+                ilist.Foldl,
+                ilist.Foldr,
+                ilist.Scan,
+                ilist.ForEach,
+                ilist.stmts.Any,
+                ilist.stmts.All,
+            ),
+        )
+        for stmt in kernel.code.walk()
+    )
+    assert sum(isinstance(stmt, scf.For) for stmt in kernel.code.walk()) == 9
+    assert kernel(xs) == expected
+    assert list(xs) == [1, 2, 3]
+    assert not pass_(kernel).has_done_something
+
+
+def test_pass_infers_types_before_rewriting() -> None:
+    @structural_no_opt
+    def double(x: int) -> int:
+        return 2 * x
+
+    @structural_no_opt
+    def mapped(xs: ilist.IList[int, Any]) -> ilist.IList[int, Any]:
+        return ilist.map(double, xs)
+
+    assert not mapped.inferred
+    assert ilist.IListToLoop(mapped.dialects, no_raise=False)(mapped).has_done_something
+    assert mapped.inferred
+    loop = next(stmt for stmt in mapped.code.walk() if isinstance(stmt, scf.For))
+    assert loop.results[0].type.is_subseteq(ilist.IListType[types.Int])
+    assert list(mapped(ilist.IList([1, 2], elem=types.Int))) == [2, 4]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("count", [0, 2])
+def test_pass_rewrites_nested_statements(enabled: bool, count: int) -> None:
+    @structural_no_opt
+    def double(x: int) -> int:
+        return 2 * x
+
+    @structural_no_opt
+    def add(acc: int, x: int) -> int:
+        return acc + x
+
+    @structural_no_opt
+    def kernel(xs: ilist.IList[int, Any], enabled: bool, count: int) -> int:
+        total = 0
+        for _ in range(count):
+            if enabled:
+                total = total + ilist.foldl(add, ilist.map(double, xs), 0)
+        return total
+
+    xs = ilist.IList([1, 2, 3], elem=types.Int)
+    expected = kernel(xs, enabled, count)
+    assert expected == (12 * count if enabled else 0)
+    assert ilist.IListToLoop(kernel.dialects, no_raise=False)(kernel).has_done_something
+    assert not any(
+        isinstance(stmt, (ilist.Map, ilist.Foldl)) for stmt in kernel.code.walk()
+    )
+    assert kernel(xs, enabled, count) == expected
+
+
+def test_pass_leaves_unrelated_methods_unchanged() -> None:
+    @structural_no_opt
+    def kernel(xs: ilist.IList[int, Any]) -> int:
+        return len(xs)
+
+    TypeInfer(kernel.dialects, no_raise=False)(kernel)
+    assert not ilist.IListToLoop(kernel.dialects, no_raise=False)(
+        kernel
+    ).has_done_something
+    assert not any(isinstance(stmt, scf.For) for stmt in kernel.code.walk())
