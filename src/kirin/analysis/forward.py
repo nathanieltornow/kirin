@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import TypeVar, Iterable
-from dataclasses import dataclass
+from dataclasses import field, dataclass
 
 from kirin import ir, interp, lattice
 
@@ -18,6 +18,20 @@ class ForwardFrame(interp.AbstractFrame[LatticeType]):
         for ssa_value, result in zip(keys, values):
             if ssa_value in self.entries:
                 self.set(ssa_value, self.entries[ssa_value].join(result))
+            else:
+                self.set(ssa_value, result)
+
+    def widen_values(
+        self, keys: Iterable[ir.SSAValue], values: Iterable[LatticeType]
+    ) -> None:
+        """Merge values into the frame, extrapolating instead of accumulating.
+
+        Used on control-flow back edges, where accumulating one join per
+        iteration would not converge for lattices with infinite chains.
+        """
+        for ssa_value, result in zip(keys, values):
+            if ssa_value in self.entries:
+                self.set(ssa_value, self.entries[ssa_value].widen(result))
             else:
                 self.set(ssa_value, result)
 

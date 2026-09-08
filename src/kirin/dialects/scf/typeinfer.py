@@ -46,10 +46,21 @@ class TypeInfer(absint.Methods):
             frame.worklist.append(interp.Successor(body_block, item, *loop_vars))
             return  # if terminate is Return, there is no result
 
-        loop_vars_ = interp_.frame_call_region(frame, stmt, stmt.body, item, *loop_vars)
-        if isinstance(loop_vars_, interp.ReturnValue):
-            return loop_vars_
-        elif isinstance(loop_vars_, tuple):
-            return interp_.join_results(loop_vars, loop_vars_)
-        else:  # None, loop has no result
-            return
+        for _ in range(8):
+            loop_vars_ = interp_.frame_call_region(
+                frame, stmt, stmt.body, item, *loop_vars
+            )
+            if isinstance(loop_vars_, interp.ReturnValue):
+                return loop_vars_
+            elif not isinstance(loop_vars_, tuple):  # None, loop has no result
+                return
+
+            next_vars = tuple(
+                old.widen(new) for old, new in zip(loop_vars, loop_vars_)
+            )
+            if all(new.is_subseteq(old) for old, new in zip(loop_vars, next_vars)):
+                return loop_vars  # fixpoint reached
+            loop_vars = next_vars
+            for arg, value in zip(block_args[1:], loop_vars):
+                frame.set(arg, value)
+        return tuple(types.Any for _ in loop_vars)

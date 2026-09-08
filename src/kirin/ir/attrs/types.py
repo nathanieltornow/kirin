@@ -79,6 +79,24 @@ class TypeAttribute(
             return Union(self, other)
         return AnyType()  # don't know how to join
 
+    def widen(self, other: "TypeAttribute") -> "TypeAttribute":
+        if other.is_subseteq(self):
+            return self
+        if isinstance(self, Literal) and isinstance(other, Literal):
+            return self.type.join(other.type)
+        if (
+            isinstance(self, Generic)
+            and isinstance(other, Generic)
+            and self.body == other.body
+            and self.vararg is None
+            and other.vararg is None
+            and len(self.vars) == len(other.vars)
+        ):
+            return Generic(
+                self.body, *(s.widen(o) for s, o in zip(self.vars, other.vars))
+            )
+        return self.join(other)
+
     def print_impl(self, printer: Printer) -> None:
         printer.print_name(self, prefix="!")
 

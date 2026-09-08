@@ -44,6 +44,10 @@ class Lattice(ABC, Generic[LatticeType], metaclass=LatticeMeta):
         """Meet operation."""
         ...
 
+    def widen(self, other: LatticeType) -> LatticeType:
+        """Widening operation."""
+        return self.join(other)
+
     @abstractmethod
     def is_subseteq(self, other: LatticeType) -> bool:
         """Subseteq operation."""

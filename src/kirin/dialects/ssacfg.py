@@ -90,8 +90,11 @@ class Abstract(interp.MethodTable):
             if visit in visited:
                 continue
 
+            is_back_edge = succ.block in reached
             reached.add(succ.block)
-            block_result, changes = self.run_succ(interp_, frame, succ)
+            block_result, changes = self.run_succ(
+                interp_, frame, succ, widen=is_back_edge
+            )
             if len(frame.visited[succ.block]) < 128:
                 frame.visited[succ.block].add(visit)
             else:
@@ -141,10 +144,14 @@ class Abstract(interp.MethodTable):
         interp_: interp.AbstractInterpreter[FrameType, LatticeType],
         frame: FrameType,
         succ: interp.Successor,
+        widen: bool = False,
     ) -> tuple[interp.SpecialValue[LatticeType], set[ir.SSAValue]]:
         frame._take_changes()
         frame.current_block = succ.block
-        frame.set_values(succ.block.args, succ.block_args)
+        if widen and hasattr(frame, "widen_values"):
+            frame.widen_values(succ.block.args, succ.block_args)
+        else:
+            frame.set_values(succ.block.args, succ.block_args)
         for stmt in succ.block.stmts:
             frame.current_stmt = stmt
             stmt_results = interp_.frame_eval(frame, stmt)
