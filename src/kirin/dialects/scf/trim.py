@@ -26,24 +26,24 @@ class UnusedYield(RewriteRule):
             return RewriteResult()
 
         any_unused, uses, results = self.scan_unused(node)
-        if not any_unused:
+        if not any_unused and not isinstance(node, For):
             return RewriteResult()
 
         # for For loops, keep loop-carried variables whose block arguments
         # are used inside the body AND are actually mutated across iterations,
         # even if the result is unused after the loop. A variable that is just
-        # passed through (yielded unchanged) can safely be replaced by its
-        # initializer.
+        # passed through (yielded unchanged) equals its initializer after every
+        # iteration, so its block argument and its result become the initializer.
         if isinstance(node, For):
             block = node.body.blocks[0]
             yield_stmt = block.last_stmt
             if isinstance(yield_stmt, Yield):
                 for idx in range(len(node.initializers)):
-                    if idx not in uses and block.args[idx + 1].uses:
-                        # Check if the variable is mutated: the yielded value
-                        # differs from the block argument (not just passed through)
-                        if yield_stmt.args[idx] is not block.args[idx + 1]:
-                            uses.add(idx)
+                    if yield_stmt.args[idx] is block.args[idx + 1]:
+                        uses.discard(idx)
+                        node.results[idx].replace_by(node.initializers[idx])
+                    elif idx not in uses and block.args[idx + 1].uses:
+                        uses.add(idx)
             results = [r for idx, r in enumerate(node._results) if idx in uses]
             if len(results) == len(node._results):
                 return RewriteResult()
@@ -54,7 +54,9 @@ class UnusedYield(RewriteRule):
                 if not isinstance(block.last_stmt, Yield):
                     continue
                 # remove unused results from the yield statement
-                block.last_stmt.args = [block.last_stmt.args[idx] for idx in uses]
+                block.last_stmt.args = [
+                    block.last_stmt.args[idx] for idx in sorted(uses)
+                ]
 
         if isinstance(node, For):
             # replace the block arguments at the unused indices with the initializers
@@ -71,6 +73,6 @@ class UnusedYield(RewriteRule):
                 arg.delete()
 
             # remove the unused initializers from the initializers inputs
-            node.initializers = tuple(node.initializers[idx] for idx in uses)
+            node.initializers = tuple(node.initializers[idx] for idx in sorted(uses))
 
         return RewriteResult(has_done_something=True)

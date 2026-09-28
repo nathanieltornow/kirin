@@ -7,7 +7,7 @@ loop body. This breaks loop-carried variable semantics when the previous
 iteration's value is needed (e.g., prev = curr pattern).
 """
 
-from kirin import rewrite
+from kirin import ir, types, rewrite
 from kirin.prelude import structural, python_basic
 from kirin.dialects import py, scf, func, ilist, lowering
 
@@ -143,3 +143,48 @@ def test_trim_with_lists():
     actual_return_val = mwe()
 
     assert actual_return_val == expected_return_val
+
+
+def test_trim_pass_through_used_after_loop():
+    """A variable yielded unchanged reads as its initializer after the loop."""
+
+    @basic_scf
+    def main():
+        fixed = 5
+        total = 0
+        for i in range(3):
+            total = total + fixed
+            fixed = fixed
+        return total, fixed
+
+    expected_return_val = main.py_func()
+    # `fixed = fixed` is an alias, which inlining turns into a pass-through.
+    rewrite.Walk(rewrite.InlineAlias()).rewrite(main.code)
+    rewrite.Walk(scf.trim.UnusedYield()).rewrite(main.code)
+    (loop,) = [s for s in main.callable_region.walk() if isinstance(s, scf.For)]
+    assert len(loop.initializers) == len(loop.results) == 1
+    assert main() == expected_return_val
+
+
+def test_trim_keeps_the_order_of_many_results():
+    """The kept indices come in index order, whatever order a set iterates in."""
+    block = ir.Block()
+    cond = block.args.append_from(types.Bool, "flag")
+    branches = []
+    values = []
+    for offset in (10, 0):
+        branch = ir.Block()
+        branch.args.append_from(types.Bool)
+        constants = [py.Constant(offset + k) for k in range(10)]
+        for constant in constants:
+            branch.stmts.append(constant)
+        branch.stmts.append(scf.Yield(*(c.result for c in constants)))
+        branches.append(branch)
+        values.append([c.result for c in constants])
+    chosen = scf.IfElse(cond, ir.Region(branches[0]), ir.Region(branches[1]))
+    block.stmts.append(chosen)
+    block.stmts.append(py.tuple.New(tuple(chosen.results[7:])))
+
+    rewrite.Walk(scf.trim.UnusedYield()).rewrite(block)
+    for branch, yielded in zip(branches, values):
+        assert list(branch.last_stmt.args) == yielded[7:]
