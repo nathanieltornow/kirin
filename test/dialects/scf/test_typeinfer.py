@@ -1,7 +1,7 @@
 from pytest import mark
 
 from kirin import types
-from kirin.prelude import structural_no_opt
+from kirin.prelude import structural, structural_no_opt
 from kirin.analysis import TypeInference
 
 type_infer = TypeInference(structural_no_opt)
@@ -31,3 +31,19 @@ def test_simple_ifelse():
 
     frame, ret = type_infer.run(simple_ifelse)
     assert ret.is_subseteq(types.Bool | types.Int | types.NoneType)
+
+
+def test_the_dead_branch_of_a_constant_condition_is_typed():
+    @structural(typeinfer=True)
+    def main(x: float):
+        flag = 1 > 0
+        if flag:
+            y = x * 0.5
+        else:
+            y = x * 0.25
+        return y
+
+    products = [s for s in main.callable_region.walk() if s.name == "mult"]
+    assert len(products) == 2
+    assert all(p.results[0].type == types.Float for p in products)
+    assert main.return_type == types.Float

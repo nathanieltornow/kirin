@@ -1,5 +1,5 @@
 from kirin import types, interp
-from kirin.analysis import ForwardFrame, TypeInference
+from kirin.analysis import ForwardFrame, TypeInference, const
 from kirin.dialects import func
 from kirin.dialects.eltype import ElType
 
@@ -10,17 +10,21 @@ from ._dialect import dialect
 
 @dialect.register(key="typeinfer")
 class TypeInfer(absint.Methods):
-    @interp.impl(IfElse)
-    def if_else_(
+    def infer_if_else(
         self,
-        interp_: TypeInference,
-        frame: ForwardFrame[types.TypeAttribute],
+        interp_: interp.AbstractInterpreter,
+        frame: interp.AbstractFrame,
         stmt: IfElse,
     ):
         frame.set(
             stmt.cond, frame.get(stmt.cond).meet(types.Bool)
         )  # set cond backwards
-        return super().if_else(interp_, frame, stmt)
+        if isinstance(hint := stmt.cond.hints.get("const"), const.Value):
+            # The dead branch still gets its types, since `verify_type` checks
+            # every statement. Its results do not reach the join.
+            dead = stmt.else_body if hint.data else stmt.then_body
+            self._infer_if_else_cond(interp_, frame, stmt, dead)
+        return super().infer_if_else(interp_, frame, stmt)
 
     @interp.impl(For)
     def for_loop(

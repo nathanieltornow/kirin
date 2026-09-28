@@ -29,6 +29,19 @@ class Methods(interp.MethodTable):
         frame: interp.AbstractFrame,
         stmt: IfElse,
     ):
+        return self.infer_if_else(interp_, frame, stmt)
+
+    def infer_if_else(
+        self,
+        interp_: interp.AbstractInterpreter,
+        frame: interp.AbstractFrame,
+        stmt: IfElse,
+    ):
+        """Run the branches that the condition allows and join their results.
+
+        A subclass overrides this method, since a second `impl` of `IfElse` in
+        a subclass would not replace the one of this table in the registry.
+        """
         if isinstance(hint := stmt.cond.hints.get("const"), const.Value):
             if hint.data:
                 return self._infer_if_else_cond(interp_, frame, stmt, stmt.then_body)
