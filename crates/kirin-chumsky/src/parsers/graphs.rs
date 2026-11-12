@@ -82,8 +82,12 @@ where
     I: TokenInput<'t>,
     S: Clone,
 {
-    let statements = language
-        .clone()
+    // A language can define its own `yield` statement, such as `scf.yield`.
+    // The guard stops the statement list at the `yield` keyword, so the
+    // graph's yield clause reads that line.
+    let statements = just(Token::Identifier("yield"))
+        .not()
+        .ignore_then(language)
         .map_with(|stmt, e| Spanned {
             value: stmt,
             span: e.span(),
@@ -197,21 +201,8 @@ where
 {
     let header = just(Token::Identifier("digraph")).ignore_then(graph_header::<_, T>());
 
-    let statements = language
-        .clone()
-        .map_with(|stmt, e| Spanned {
-            value: stmt,
-            span: e.span(),
-        })
-        .then_ignore(just(Token::Semicolon))
-        .repeated()
-        .collect::<Vec<_>>();
-
-    let yields = yield_clause().or_not().map(|y| y.unwrap_or_default());
-
-    let body = statements
-        .then(yields)
-        .delimited_by(just(Token::LBrace), just(Token::RBrace));
+    let body =
+        digraph_body_statements(language).delimited_by(just(Token::LBrace), just(Token::RBrace));
 
     header
         .then(body)

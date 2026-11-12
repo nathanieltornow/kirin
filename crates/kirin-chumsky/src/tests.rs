@@ -1473,6 +1473,42 @@ fn test_digraph_no_yield() {
     assert!(dg.yields.is_empty());
 }
 
+/// A language whose own `yield` statement must not swallow the graph's yield clause.
+macro_rules! graph_lang_with_yield {
+    () => {{
+        use chumsky::prelude::*;
+        chumsky::recursive::recursive::<
+            _,
+            _,
+            chumsky::extra::Err<Rich<'_, kirin_lexer::Token<'_>>>,
+            _,
+            _,
+        >(|_| {
+            let int = select! { kirin_lexer::Token::Int(v) => v.parse::<i32>().unwrap() };
+            let statement_yield = just(kirin_lexer::Token::Identifier("yield"))
+                .ignore_then(
+                    select! { kirin_lexer::Token::SSAValue(_) => () }
+                        .separated_by(just(kirin_lexer::Token::Comma)),
+                )
+                .to(-1);
+            int.or(statement_yield)
+        })
+    }};
+}
+
+#[test]
+fn test_digraph_yield_wins_over_a_yield_statement() {
+    let language = graph_lang_with_yield!();
+    let result = test_parse!(
+        "digraph ^dg0 ( %p0 : 1 ) { 42 ; yield %p0 ; }",
+        digraph::<_, i32, _>(language)
+    );
+    let dg = result.expect("the digraph should parse");
+    assert_eq!(dg.statements.len(), 1);
+    assert_eq!(dg.yields.len(), 1);
+    assert_eq!(dg.yields[0].value, "p0");
+}
+
 #[test]
 fn test_digraph_multiple_yields() {
     let language = graph_lang!();
